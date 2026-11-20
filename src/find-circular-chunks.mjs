@@ -30,7 +30,96 @@
  * @returns {string[][]}
  */
 export function findCircularChunks(bundle, options = {}) {
-  throw new Error('findCircularChunks is not implemented');
+  if (bundle === null || typeof bundle !== 'object') {
+    throw new TypeError('bundle must be a non-null object');
+  }
+
+  const graph = buildGraph(bundle, options?.includeDynamic === true);
+  const cycles = [];
+
+  // Each cycle is found from its smallest chunk only: the search from `start`
+  // visits only chunks that sort after `start`. Thus each cycle is reported
+  // once, and it is already rotated to its canonical form. Because the start
+  // chunks and the edge lists are sorted, the cycles also come out in the
+  // canonical order.
+  for (const start of graph.keys()) {
+    const allowed = chunksThatReach(start, graph);
+    const path = [start];
+    const onPath = new Set(path);
+
+    const visit = (name) => {
+      for (const next of graph.get(name)) {
+        if (next === start) {
+          cycles.push([...path]);
+        } else if (allowed.has(next) && !onPath.has(next)) {
+          path.push(next);
+          onPath.add(next);
+          visit(next);
+          onPath.delete(next);
+          path.pop();
+        }
+      }
+    };
+
+    visit(start);
+  }
+
+  return cycles;
+}
+
+/**
+ * The chunk graph as a map from each chunk's file name to the sorted,
+ * de-duplicated file names of the chunks it imports. The map's keys are sorted
+ * too.
+ */
+function buildGraph(bundle, includeDynamic) {
+  const names = Object.keys(bundle)
+    .filter((name) => bundle[name]?.type === 'chunk')
+    .sort(compareNames);
+  const isChunk = new Set(names);
+
+  const graph = new Map();
+  for (const name of names) {
+    const { imports = [], dynamicImports = [] } = bundle[name];
+    const targets = includeDynamic ? [...imports, ...dynamicImports] : imports;
+    const edges = new Set(targets.filter((target) => isChunk.has(target)));
+    graph.set(name, [...edges].sort(compareNames));
+  }
+  return graph;
+}
+
+/**
+ * The chunks that sort after `start` and can reach `start` through chunks that
+ * sort after it. A search that stays inside this set never enters a dead end,
+ * so a graph without cycles costs no search at all.
+ */
+function chunksThatReach(start, graph) {
+  const importers = new Map();
+  for (const [name, edges] of graph) {
+    if (name < start) continue;
+    for (const target of edges) {
+      if (target < start) continue;
+      if (!importers.has(target)) importers.set(target, []);
+      importers.get(target).push(name);
+    }
+  }
+
+  const reached = new Set();
+  const pending = [start];
+  while (pending.length > 0) {
+    for (const name of importers.get(pending.pop()) ?? []) {
+      if (name !== start && !reached.has(name)) {
+        reached.add(name);
+        pending.push(name);
+      }
+    }
+  }
+  return reached;
+}
+
+/** Plain code unit order, which does not depend on the machine's locale. */
+function compareNames(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -45,5 +134,12 @@ export function findCircularChunks(bundle, options = {}) {
  * @returns {string}
  */
 export function formatCycle(cycle) {
-  throw new Error('formatCycle is not implemented');
+  if (
+    !Array.isArray(cycle) ||
+    cycle.length === 0 ||
+    !cycle.every((name) => typeof name === 'string')
+  ) {
+    throw new TypeError('cycle must be a non-empty array of strings');
+  }
+  return [...cycle, cycle[0]].join(' -> ');
 }
